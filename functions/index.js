@@ -31,8 +31,10 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     // uncomment `intentMap.set('your intent name here', yourFunctionHandler);`
     // below to get this function to be run when a Dialogflow intent is matched
     function lookupForAMeetingRoom(agent) {
+        agent.add(`Je regarde ce qui est disponible...`);
+
         console.log("lookupForAMeetingRoom function")
-        //console.log(agent.parameters)
+        console.log(agent.parameters)
 
         let date = agent.parameters.date;
         let time = agent.parameters.time;
@@ -59,9 +61,6 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             privatekey.private_key,
             ['https://www.googleapis.com/auth/calendar.readonly']);
 
-        //authenticate request
-        jwtClient.authorize();
-
         const dateSearched = moment(date);
         const year = dateSearched.format('YYYY');
         const month = dateSearched.format('MM');
@@ -71,42 +70,109 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         const hour = timeSearched.format("HH")
         const minutes = timeSearched.format("mm")
 
-        const searched = moment.utc()
+        const searched = moment(`${year}-${month}-${day} ${hour}:${minutes}`);
 
         const calendar = google.calendar('v3');
-        calendar.events.list({
-            auth: jwtClient,
-            calendarId: 'rikeddg9ebiras8ptmstro0um0@group.calendar.google.com',
-            //maxResults: 20,
-            //orderBy: "startTime",
-            timeMin: moment(`${year}-${month}-${day}`).format(),
-            timeMax: moment(`${year}-${month}-${day}`).add(1, 'day').format(),
 
-        }, function (error, response) {
-            if (error) {
-                console.error(error);
-            } else {
-                console.log(moment(`${year}-${month}-${day}`).toISOString());
-                console.log(moment(`${year}-${month}-${day}`).add(1, 'day').toISOString());
-                console.log("calendar OK")
-                console.log(response.data.items)
-                if (typeof response.data.items !== "undefined") {
-                    console.log(response.data.items.length);
-                    agent.add(`J'ai trouvé ${response.data.items.length} évènements`);
+        let resultIsHere = false;
+
+
+        return new Promise((resolve, reject) => {
+            calendar.events.list({
+                auth: jwtClient,
+                calendarId: 'rikeddg9ebiras8ptmstro0um0@group.calendar.google.com',
+                //maxResults: 20,
+                //orderBy: "startTime",
+                timeMin: moment(`${year}-${month}-${day} ${hour}:${minutes}`).format(),
+                timeMax: moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(4, 'hours').format(),
+                fields: "kind, items(start, end, summary, location)"
+            }, function (error, response) {
+                // Handle the results here (response.result has the parsed body).
+                let availableRooms = [];
+
+                if (typeof response != "undefined") {
+                    console.log("Response", response.data.items);
+                    console.log("error", response.data.items[0].start);
+
+                    if (response.data && response.data.items) {
+                        for (let index in response.data.items) {
+                            let event = response.data.items[index];
+                            let eventStart = moment(event.start.dateTime);
+                            let eventEnd = moment(event.end.dateTime);
+                            if (searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) {
+                                console.log("busy room : ", event.location);
+                                let location = event.location.toLowerCase();
+                                let eventName = event.summary.toLowerCase();
+                                for (let i in meetingsRooms) {
+                                    let room = meetingsRooms[i];
+                                    // si la salle est nommée
+                                    if (location.indexOf(room.name) == -1 || eventName.indexOf(room.name) == -1) {
+                                        availableRooms.push(room);
+                                    }
+                                }
+
+                            }
+                        }
+
+                    } else {
+                        availableRooms = meetingsRooms;
+                    }
                 } else {
-                    agent.add(`Pas de réponse`);
+                    availableRooms = meetingsRooms;
+                }
+                let output;
+                if (availableRooms.length > 1) {
+                    let roomNames = availableRooms.map(function (item) {
+                        return item.name;
+                    }).join(", ");
+                    output = agent.add(`J'ai trouvé plusieurs salles disponibles : ${roomNames}`);
+                } else if (availableRooms.length == 1) {
+                    output = agent.add(`Il ne reste qu'une seule salle disponible : ${availableRooms[0].name}`);
+                } else if (availableRooms.length == 0) {
+                    output = agent.add(`Je suis désolé, mais je n'ai pas trouvé de salle disponible...`);
                 }
 
+                resolve(output);
 
-            }
+                //agent.add(`J'ai trouvé des évènements ${JSON.stringify(response.data)}`);
+            });
+        });
 
 
-        })
+        /*, function (error, response) {
+         if (error) {
+         console.error(error);
+         } else {
+         console.log(moment(`${year} - ${month} -${day}`).toISOString());
+         console.log(moment(`${year} - ${month} -${day}`).add(12, 'hours').toISOString());
+         console.log("calendar OK")
+         //console.log(response.data.items)
+         if (typeof response.data.items !== "undefined") {
+         console.log(response.data.items.length);
+         // so now we got the events of the day:
+         // here are the usable fields:
+         // start, end, summary, location
+
+
+         agent.add(`J'ai trouvé ${response.data.items.length} évènements`);
+         } else {
+         agent.add(`
+         Pas
+         de
+         réponse`);
+         }
+
+
+         }
+         resultIsHere = true;
+
+
+         });*/
 
         //        let calendar = google.calendar('v3');
 
 
-        //   agent.add(`This message is from Dialogflow's Cloud Functions for Firebase editor!`);
+        //   agent.add(`This message isfrom Dialogflow 's Cloud Functions for Firebase editor!`);
         //   agent.add(new Card({
         //       title: `Title: this is a card title`,
         //       imageUrl: 'https://developers.google.com/actions/images/badges/XPM_BADGING_GoogleAssistant_VER.png',
@@ -138,4 +204,5 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     intentMap.set('Recherche salle de réunion', lookupForAMeetingRoom);
     // intentMap.set('your intent name here', googleAssistantHandler);
     agent.handleRequest(intentMap);
-});
+})
+;
