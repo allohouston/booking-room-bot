@@ -20,6 +20,7 @@
         "firebase-functions": "^1.1.0",
         "google-auth-library": "^1.0.0",
         "googleapis": "^27.0.0",
-        "moment": "^2.22.2"
+        "moment": "^2.22.2",
+        "moment-timezone": "^0.5.20"
     }
 }

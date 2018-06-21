@@ -6,7 +6,9 @@ const functions = require('firebase-functions');
 const {WebhookClient} = require('dialogflow-fulfillment');
 const {Card, Suggestion} = require('dialogflow-fulfillment');
 const {google} = require('googleapis');
-const moment = require('moment');
+const moment = require('moment-timezone');
+moment.tz.setDefault('Europe/Paris');
+moment.locale('fr');
 
 const privatekey = require('./secret.json');
 
@@ -15,8 +17,8 @@ process.env.DEBUG = 'dialogflow:debug'; // enables lib debugging statements
 
 exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, response) => {
     const agent = new WebhookClient({request, response});
-    //console.log('Dialogflow Request headers: ' + JSON.stringify(request.headers));
-    //console.log('Dialogflow Request body: ' + JSON.stringify(request.body));
+    console.log('Dialogflow Request headers: ' + JSON.stringify(request.headers));
+    console.log('Dialogflow Request body: ' + JSON.stringify(request.body));
 
     function welcome(agent) {
         agent.add(`Welcome to my agent!`);
@@ -31,14 +33,15 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     // uncomment `intentMap.set('your intent name here', yourFunctionHandler);`
     // below to get this function to be run when a Dialogflow intent is matched
     function lookupForAMeetingRoom(agent) {
-        agent.add(`Je regarde ce qui est disponible...`);
 
-        console.log("lookupForAMeetingRoom function")
-        console.log(agent.parameters)
+        console.log("lookupForAMeetingRoom function");
+        console.log(agent.parameters);
 
         let date = agent.parameters.date;
         let time = agent.parameters.time;
         let numberOfPersons = agent.parameters.numberOfPersons;
+        let duration = agent.parameters.duration;
+        agent.add(`Je regarde ce qui est disponible pour le ${moment(date).format("DD MMMM")} à ${moment(time).tz('Europe/Paris').format("HH:mm")}, pour une durée de ${duration.amount} ${duration.unit}...`);
 
         let meetingsRooms = [
             {id: 1, name: "lion", numberOfPersons: 20},
@@ -52,7 +55,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             {id: 9, name: "ecurie", numberOfPersons: 10},
             {id: 10, name: "boeuf", numberOfPersons: 10},
             {id: 11, name: "pomme", numberOfPersons: 10},
-            {id: 12, name: "chien", numberOfPersons: 100},
+            {id: 12, name: "chien", numberOfPersons: 50},
         ];
 
         let jwtClient = new google.auth.JWT(
@@ -66,16 +69,16 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         const month = dateSearched.format('MM');
         const day = dateSearched.format("DD");
 
-        const timeSearched = moment(time);
-        const hour = timeSearched.format("HH")
-        const minutes = timeSearched.format("mm")
+        const timeSearched = moment(time).tz('Europe/Paris');
+        const hour = timeSearched.format("HH");
+        const minutes = timeSearched.format("mm");
 
         const searched = moment(`${year}-${month}-${day} ${hour}:${minutes}`);
+        const searchedEnd = moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(duration.amount, duration.unit.charAt(0));
+        console.log('SEARCH = ', searched.format());
+        console.log('SEARCH END = ', searchedEnd.format());
 
         const calendar = google.calendar('v3');
-
-        let resultIsHere = false;
-
 
         return new Promise((resolve, reject) => {
             calendar.events.list({
@@ -85,45 +88,76 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                 //orderBy: "startTime",
                 timeMin: moment(`${year}-${month}-${day} ${hour}:${minutes}`).format(),
                 timeMax: moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(4, 'hours').format(),
-                fields: "kind, items(start, end, summary, location)"
+                fields: "kind, items(start, end, summary, location)",
+                singleEvents: true, // to hack recurring events
             }, function (error, response) {
                 // Handle the results here (response.result has the parsed body).
-                let availableRooms = [];
+                let busyRooms = [];
 
+                let errors = [];
                 if (typeof response != "undefined") {
                     console.log("Response", response.data.items);
-                    console.log("error", response.data.items[0].start);
+                    //console.log("error", response.data.items[0].start);
 
                     if (response.data && response.data.items) {
                         for (let index in response.data.items) {
                             let event = response.data.items[index];
+                            // using UTC time here to avoid timezone issue created by recurring events
                             let eventStart = moment(event.start.dateTime);
                             let eventEnd = moment(event.end.dateTime);
-                            if (searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) {
-                                console.log("busy room : ", event.location);
-                                let location = event.location.toLowerCase();
+                            //console.log("eventName", event.summary)
+                            //console.log("eventStartUtc", eventStart.format())
+                            //console.log("eventEndUtc", eventEnd.format())
+                            //console.log("searched", searched.format())
+
+                            // add here the condition on end time of the meeting
+                            if ((searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) || (searchedEnd.isSameOrAfter(eventStart) && searchedEnd.isSameOrBefore(eventEnd))) {
                                 let eventName = event.summary.toLowerCase();
+                                //console.log("busy room for eventName", eventName);
+                                let location = "non défini";
+                                if (typeof event.location != "undefined") {
+                                    location = event.location.toLowerCase();
+                                }
+                                let foundARoom = false;
                                 for (let i in meetingsRooms) {
-                                    let room = meetingsRooms[i];
+                                    let roomName = meetingsRooms[i].name;
+                                    //console.log("Testing the room", roomName);
                                     // si la salle est nommée
-                                    if (location.indexOf(room.name) == -1 || eventName.indexOf(room.name) == -1) {
-                                        availableRooms.push(room);
+                                    if (location.indexOf(roomName) > -1 || eventName.indexOf(roomName) > -1) {
+                                        busyRooms.push(meetingsRooms[i].id);
+                                        console.log("Room ", roomName, " is busy with the event ", eventName, location);
+                                        foundARoom = true;
+                                        break;
                                     }
                                 }
-
+                                if (foundARoom === false) {
+                                    errors.push(eventName + " - " + location);
+                                }
                             }
                         }
-
-                    } else {
-                        availableRooms = meetingsRooms;
                     }
-                } else {
-                    availableRooms = meetingsRooms;
                 }
+
+                let availableRooms = [];
+                for (let i in meetingsRooms) {
+                    let room = meetingsRooms[i];
+                    let isBusy = false;
+                    for (let j in busyRooms) {
+                        let busy = busyRooms[j];
+                        if (busy === room.id) {
+                            isBusy = true;
+                        }
+                    }
+                    if (isBusy === false) {
+                        availableRooms.push(room);
+                    }
+                }
+                //console.log("availableRooms", availableRooms);
+
                 let output;
                 if (availableRooms.length > 1) {
                     let roomNames = availableRooms.map(function (item) {
-                        return item.name;
+                        return `${item.id}.${item.name} (${item.numberOfPersons} p)`;
                     }).join(", ");
                     output = agent.add(`J'ai trouvé plusieurs salles disponibles : ${roomNames}`);
                 } else if (availableRooms.length == 1) {
@@ -132,76 +166,41 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     output = agent.add(`Je suis désolé, mais je n'ai pas trouvé de salle disponible...`);
                 }
 
-                resolve(output);
+                if (errors.length > 0) {
+                    let errorsText = errors.join(', ');
+                    agent.add(`J'ai eu un problème avec : ${errorsText}. Il faudrait mieux que vous vérifiez vous même l'agenda ici : https://calendar.google.com/calendar/r`)
+                }
+
+                agent.add("Veux tu que je regarde aussi dans l'agenda Square ouvert ?")
+                resolve();
 
                 //agent.add(`J'ai trouvé des évènements ${JSON.stringify(response.data)}`);
             });
         });
 
 
-        /*, function (error, response) {
-         if (error) {
-         console.error(error);
-         } else {
-         console.log(moment(`${year} - ${month} -${day}`).toISOString());
-         console.log(moment(`${year} - ${month} -${day}`).add(12, 'hours').toISOString());
-         console.log("calendar OK")
-         //console.log(response.data.items)
-         if (typeof response.data.items !== "undefined") {
-         console.log(response.data.items.length);
-         // so now we got the events of the day:
-         // here are the usable fields:
-         // start, end, summary, location
-
-
-         agent.add(`J'ai trouvé ${response.data.items.length} évènements`);
-         } else {
-         agent.add(`
-         Pas
-         de
-         réponse`);
-         }
-
-
-         }
-         resultIsHere = true;
-
-
-         });*/
-
-        //        let calendar = google.calendar('v3');
-
-
-        //   agent.add(`This message isfrom Dialogflow 's Cloud Functions for Firebase editor!`);
-        //   agent.add(new Card({
-        //       title: `Title: this is a card title`,
-        //       imageUrl: 'https://developers.google.com/actions/images/badges/XPM_BADGING_GoogleAssistant_VER.png',
-        //       text: `This is the body text of a card.  You can even use line\n  breaks and emoji! 💁`,
-        //       buttonText: 'This is a button',
-        //       buttonUrl: 'https://assistant.google.com/'
-        //     })
-        //   );
-        //   agent.add(new Suggestion(`Quick Reply`));
-        //   agent.add(new Suggestion(`Suggestion`));
-        //   agent.setContext({ name: 'weather', lifespan: 2, parameters: { city: 'Rome' }});
     }
 
-    // // Uncomment and edit to make your own Google Assistant intent handler
-    // // uncomment `intentMap.set('your intent name here', googleAssistantHandler);`
-    // // below to get this function to be run when a Dialogflow intent is matched
-    // function googleAssistantHandler(agent) {
-    //   let conv = agent.conv(); // Get Actions on Google library conv instance
-    //   conv.ask('Hello from the Actions on Google client library!') // Use Actions on Google library
-    //   agent.add(conv); // Add Actions on Google library responses to your agent's response
-    // }
-    // // See https://github.com/dialogflow/dialogflow-fulfillment-nodejs/tree/master/samples/actions-on-google
-    // // for a complete Dialogflow fulfillment library Actions on Google client library v2 integration sample
+    function lookupForAMeetingRoomInSquareOuvert(agent) {
+        console.log("lookupForAMeetingRoomInSquareOuvert context", agent.context);
+
+        agent.add(`Je regarde ce qui est disponible...`);
+        agent.add(`Veux tu que je t'aide à réserver une salle ? Si oui, dis moi quelle salle réserver`);
+    }
+
+    function bookARoom(agent) {
+        console.log("bookARoom ", agent.parameters);
+        console.log("bookARoom context", agent.context);
+        agent.add("voici le lien")
+    }
 
     // Run the proper function handler based on the matched Dialogflow intent name
     let intentMap = new Map();
     intentMap.set('Default Welcome Intent', welcome);
     intentMap.set('Default Fallback Intent', fallback);
-    intentMap.set('Recherche salle de réunion', lookupForAMeetingRoom);
+    intentMap.set('Recherche salle de reunion', lookupForAMeetingRoom);
+    intentMap.set('Recherche square ouvert - yes', lookupForAMeetingRoomInSquareOuvert);
+    intentMap.set('reservation de salle - yes - yes', bookARoom);
     // intentMap.set('your intent name here', googleAssistantHandler);
     agent.handleRequest(intentMap);
 })
