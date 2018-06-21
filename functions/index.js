@@ -5,13 +5,18 @@
 const functions = require('firebase-functions');
 const {WebhookClient} = require('dialogflow-fulfillment');
 const {Card, Suggestion} = require('dialogflow-fulfillment');
+const {google} = require('googleapis');
+const moment = require('moment');
+
+const privatekey = require('./secret.json');
+
 
 process.env.DEBUG = 'dialogflow:debug'; // enables lib debugging statements
 
 exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, response) => {
     const agent = new WebhookClient({request, response});
-    console.log('Dialogflow Request headers: ' + JSON.stringify(request.headers));
-    console.log('Dialogflow Request body: ' + JSON.stringify(request.body));
+    //console.log('Dialogflow Request headers: ' + JSON.stringify(request.headers));
+    //console.log('Dialogflow Request body: ' + JSON.stringify(request.body));
 
     function welcome(agent) {
         agent.add(`Welcome to my agent!`);
@@ -27,7 +32,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
     // below to get this function to be run when a Dialogflow intent is matched
     function lookupForAMeetingRoom(agent) {
         console.log("lookupForAMeetingRoom function")
-        console.log(agent.parameters)
+        //console.log(agent.parameters)
 
         let date = agent.parameters.date;
         let time = agent.parameters.time;
@@ -35,7 +40,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
 
         let meetingsRooms = [
             {id: 1, name: "lion", numberOfPersons: 20},
-            //{id: 2, name: "hydre", numberOfPersons:},
+            //{id: 2, name: "hydre", numberOfPersons: 5},
             {id: 3, name: "sanglier", numberOfPersons: 10},
             {id: 4, name: "biche", numberOfPersons: 10},
             {id: 5, name: "oiseau", numberOfPersons: 5},
@@ -48,9 +53,58 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
             {id: 12, name: "chien", numberOfPersons: 100},
         ];
 
-        let calendar = google.calendar('v3');
+        let jwtClient = new google.auth.JWT(
+            privatekey.client_email,
+            null,
+            privatekey.private_key,
+            ['https://www.googleapis.com/auth/calendar.readonly']);
 
-        agent.add(`Voici ce que j'ai trouvé`);
+        //authenticate request
+        jwtClient.authorize();
+
+        const dateSearched = moment(date);
+        const year = dateSearched.format('YYYY');
+        const month = dateSearched.format('MM');
+        const day = dateSearched.format("DD");
+
+        const timeSearched = moment(time);
+        const hour = timeSearched.format("HH")
+        const minutes = timeSearched.format("mm")
+
+        const searched = moment.utc()
+
+        const calendar = google.calendar('v3');
+        calendar.events.list({
+            auth: jwtClient,
+            calendarId: 'rikeddg9ebiras8ptmstro0um0@group.calendar.google.com',
+            //maxResults: 20,
+            //orderBy: "startTime",
+            timeMin: moment(`${year}-${month}-${day}`).format(),
+            timeMax: moment(`${year}-${month}-${day}`).add(1, 'day').format(),
+
+        }, function (error, response) {
+            if (error) {
+                console.error(error);
+            } else {
+                console.log(moment(`${year}-${month}-${day}`).toISOString());
+                console.log(moment(`${year}-${month}-${day}`).add(1, 'day').toISOString());
+                console.log("calendar OK")
+                console.log(response.data.items)
+                if (typeof response.data.items !== "undefined") {
+                    console.log(response.data.items.length);
+                    agent.add(`J'ai trouvé ${response.data.items.length} évènements`);
+                } else {
+                    agent.add(`Pas de réponse`);
+                }
+
+
+            }
+
+
+        })
+
+        //        let calendar = google.calendar('v3');
+
 
         //   agent.add(`This message is from Dialogflow's Cloud Functions for Firebase editor!`);
         //   agent.add(new Card({
