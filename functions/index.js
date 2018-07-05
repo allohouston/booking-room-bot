@@ -48,26 +48,28 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         agent.add(`I'm sorry, can you try again?`);
     }
 
-    // Uncomment and edit to make your own intent handler
-    // uncomment `intentMap.set('your intent name here', yourFunctionHandler);`
-    // below to get this function to be run when a Dialogflow intent is matched
-    function lookupForAMeetingRoom(agent) {
+    function searchARoom(calendarId, agent, parameters) {
+        console.log("search a room function", parameters);
+        let date = parameters.date;
+        let time = parameters.time;
+        let duration = parameters.duration;
 
-        console.log("lookupForAMeetingRoom function");
-        console.log(agent.parameters);
 
-        let date = agent.parameters.date;
-        let time = agent.parameters.time;
-        let numberOfPersons = agent.parameters.numberOfPersons;
-        let duration = agent.parameters.duration;
-        agent.add(`Je regarde ce qui est disponible pour le ${moment(date).format("DD MMMM")} à ${moment(time).tz('Europe/Paris').format("HH:mm")}, pour une durée de ${duration.amount} ${duration.unit}...`);
-
+        const isSquareFerme = (calendarId === 'rikeddg9ebiras8ptmstro0um0@group.calendar.google.com');
+        // première recherche dans l'agenda square fermé
+        if (isSquareFerme) {
+            agent.add(`Je regarde ce qui est disponible pour le ${moment(date).format("DD MMMM")} à ${moment(time).tz('Europe/Paris').format("HH:mm")}, pour une durée de ${duration.amount} ${duration.unit}...`);
+        }
+        else {
+            agent.add(`Je regarde ce qui est disponible dans l'agenda square ouvert...`);
+        }
 
         let jwtClient = new google.auth.JWT(
             privatekey.client_email,
             null,
             privatekey.private_key,
             ['https://www.googleapis.com/auth/calendar.readonly']);
+
 
         const dateSearched = moment(date);
         const year = dateSearched.format('YYYY');
@@ -82,157 +84,17 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         const searchedEnd = moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(duration.amount, duration.unit.charAt(0));
         console.log('SEARCH = ', searched.format());
         console.log('SEARCH END = ', searchedEnd.format());
-
         const calendar = google.calendar('v3');
+
 
         return new Promise((resolve, reject) => {
             calendar.events.list({
                 auth: jwtClient,
-                calendarId: 'rikeddg9ebiras8ptmstro0um0@group.calendar.google.com',
+                calendarId: calendarId,
                 //maxResults: 20,
                 //orderBy: "startTime",
-                timeMin: moment(`${year}-${month}-${day} ${hour}:${minutes}`).format(),
-                timeMax: moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(4, 'hours').format(),
-                fields: "kind, items(start, end, summary, location)",
-                singleEvents: true, // to hack recurring events
-            }, function (error, response) {
-                // Handle the results here (response.result has the parsed body).
-                let busyRooms = [];
-
-                let errors = [];
-                if (typeof response != "undefined") {
-                    console.log("Response", response.data.items);
-                    //console.log("error", response.data.items[0].start);
-
-                    if (response.data && response.data.items) {
-                        for (let index in response.data.items) {
-                            let event = response.data.items[index];
-                            // using UTC time here to avoid timezone issue created by recurring events
-                            let eventStart = moment(event.start.dateTime);
-                            let eventEnd = moment(event.end.dateTime);
-                            //console.log("eventName", event.summary)
-                            //console.log("eventStartUtc", eventStart.format())
-                            //console.log("eventEndUtc", eventEnd.format())
-                            //console.log("searched", searched.format())
-
-                            // add here the condition on end time of the meeting
-                            if ((searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) || (searchedEnd.isSameOrAfter(eventStart) && searchedEnd.isSameOrBefore(eventEnd))) {
-                                let eventName = event.summary.toLowerCase();
-                                //console.log("busy room for eventName", eventName);
-                                let location = "non défini";
-                                if (typeof event.location != "undefined") {
-                                    location = event.location.toLowerCase();
-                                }
-                                let foundARoom = false;
-                                for (let i in meetingsRooms) {
-                                    let roomName = meetingsRooms[i].name;
-                                    //console.log("Testing the room", roomName);
-                                    // si la salle est nommée
-                                    if (location.indexOf(roomName) > -1 || eventName.indexOf(roomName) > -1) {
-                                        busyRooms.push(meetingsRooms[i].id);
-                                        console.log("Room ", roomName, " is busy with the event ", eventName, location);
-                                        foundARoom = true;
-                                        break;
-                                    }
-                                }
-                                if (foundARoom === false) {
-                                    errors.push(eventName + " - " + location);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let availableRooms = [];
-                for (let i in meetingsRooms) {
-                    let room = meetingsRooms[i];
-                    let isBusy = false;
-                    for (let j in busyRooms) {
-                        let busy = busyRooms[j];
-                        if (busy === room.id) {
-                            isBusy = true;
-                        }
-                    }
-                    if (isBusy === false) {
-                        availableRooms.push(room);
-                    }
-                }
-                //console.log("availableRooms", availableRooms);
-
-                let output;
-                if (availableRooms.length > 1) {
-                    let roomNames = availableRooms.map(function (item) {
-                        return `${item.id}.${item.name} (${item.numberOfPersons} p)`;
-                    }).join(", ");
-                    output = agent.add(`J'ai trouvé plusieurs salles disponibles : ${roomNames}`);
-                } else if (availableRooms.length == 1) {
-                    output = agent.add(`Il ne reste qu'une seule salle disponible : ${availableRooms[0].name}`);
-                } else if (availableRooms.length == 0) {
-                    output = agent.add(`Je suis désolé, mais je n'ai pas trouvé de salle disponible...`);
-                }
-
-                if (errors.length > 0) {
-                    let errorsText = errors.join(', ');
-                    agent.add(`J'ai eu un problème avec : ${errorsText}. Il faudrait mieux que tu vérifies toi même l'agenda ici : https://calendar.google.com/calendar/r`)
-                }
-
-                agent.add("Veux tu que je regarde aussi dans l'agenda Square ouvert ?")
-                agent.setContext({'name': 'room', 'lifespan': 2, 'parameters': agent.parameters});
-                resolve();
-
-                //agent.add(`J'ai trouvé des évènements ${JSON.stringify(response.data)}`);
-            });
-        });
-
-
-    }
-
-    function lookupForAMeetingRoomInSquareOuvert(agent) {
-        console.log("lookupForAMeetingRoomInSquareOuvert context", agent.context);
-
-        agent.add(`Je regarde ce qui est disponible dans l'agenda square ouvert...`);
-
-        console.log("lookupForAMeetingRoomInSquareOuvert function");
-
-        let context = agent.getContext('room');
-        if (typeof context === "undefined") {
-            agent.add(`Je n'ai pas compris, recommençons à zéro si tu veux bien`);
-            return;
-        }
-        let date = context.parameters.date;
-        let time = context.parameters.time;
-        let numberOfPersons = context.parameters.numberOfPersons;
-        let duration = context.parameters.duration;
-
-
-        let jwtClient = new google.auth.JWT(
-            privatekey.client_email,
-            null,
-            privatekey.private_key,
-            ['https://www.googleapis.com/auth/calendar.readonly']);
-
-        const dateSearched = moment(date);
-        const year = dateSearched.format('YYYY');
-        const month = dateSearched.format('MM');
-        const day = dateSearched.format("DD");
-
-        const timeSearched = moment(time).tz('Europe/Paris');
-        const hour = timeSearched.format("HH");
-        const minutes = timeSearched.format("mm");
-
-        const searched = moment(`${year}-${month}-${day} ${hour}:${minutes}`);
-        const searchedEnd = moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(duration.amount, duration.unit.charAt(0));
-
-        const calendar = google.calendar('v3');
-
-        return new Promise((resolve, reject) => {
-            calendar.events.list({
-                auth: jwtClient,
-                calendarId: 'gm1l9afi00ol3ism78svc5mt2k@group.calendar.google.com',
-                //maxResults: 20,
-                //orderBy: "startTime",
-                timeMin: moment(`${year}-${month}-${day} ${hour}:${minutes}`).format(),
-                timeMax: moment(`${year}-${month}-${day} ${hour}:${minutes}`).add(4, 'hours').format(),
+                timeMin: moment(`${year}-${month}-${day} 00:00`).format(),
+                timeMax: moment(`${year}-${month}-${day} 23:59`).format(),
                 fields: "kind, items(start, end, summary, location)",
                 singleEvents: true, // to hack recurring events
             }, function (error, response) {
@@ -252,12 +114,16 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                             let eventEnd = moment(event.end.dateTime);
 
                             // add here the condition on end time of the meeting
-                            if ((searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) || (searchedEnd.isSameOrAfter(eventStart) && searchedEnd.isSameOrBefore(eventEnd))) {
+                            if (
+                                (searched.isSameOrAfter(eventStart) && searched.isSameOrBefore(eventEnd)) ||
+                                (searchedEnd.isSameOrAfter(eventStart) && searchedEnd.isSameOrBefore(eventEnd))
+                            ) {
                                 let eventName = event.summary.toLowerCase();
                                 //console.log("busy room for eventName", eventName);
                                 let location = "non défini";
                                 if (typeof event.location != "undefined") {
-                                    location = event.location.toLowerCase();
+                                    // lower case  et retirer les accents
+                                    location = event.location.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
                                 }
                                 let foundARoom = false;
                                 for (let i in meetingsRooms) {
@@ -279,26 +145,89 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
                     }
                 }
 
+                let availableRooms = [];
+                for (let i in meetingsRooms) {
+                    let room = meetingsRooms[i];
+                    let isBusy = false;
+                    for (let j in busyRooms) {
+                        let busy = busyRooms[j].id;
+                        if (busy === room.id) {
+                            isBusy = true;
+                        }
+                    }
+                    if (isBusy === false) {
+                        availableRooms.push(room);
+                    }
+                }
+                //console.log("availableRooms", availableRooms);
+
+                // output de ce qui est disponible
+                if (isSquareFerme) {
+
+                    let output;
+                    if (availableRooms.length > 1) {
+                        let roomNames = availableRooms.map(function (item) {
+                            return `${item.id}.${item.name} (${item.numberOfPersons} p)`;
+                        }).join(", ");
+                        output = agent.add(`J'ai trouvé plusieurs salles disponibles : ${roomNames}`);
+                    } else if (availableRooms.length == 1) {
+                        output = agent.add(`Il ne reste qu'une seule salle disponible : ${availableRooms[0].name}`);
+                    } else if (availableRooms.length == 0) {
+                        output = agent.add(`Je suis désolé, mais je n'ai pas trouvé de salle disponible...`);
+                    }
+                }
+                else {
+                    if (busyRooms.length > 0) {
+                        let busyRoomNames = busyRooms.map(function (item) {
+                            return `${item.id}.${item.name}`
+                        }).join(', ');
+                        agent.add(`Certaines salles sont réservées sur l'agenda ouvert : ${busyRoomNames}`);
+                    }
+                    else {
+                        agent.add(`Aucune réservation sur cet agenda`);
+
+                    }
+                }
+
+
+                // output des erreurs
                 if (errors.length > 0) {
                     let errorsText = errors.join(', ');
                     agent.add(`J'ai eu un problème avec : ${errorsText}. Il faudrait mieux que tu vérifies toi même l'agenda ici : https://calendar.google.com/calendar/r`)
                 }
 
-                if (busyRooms.length > 0) {
-                    let busyRoomNames = busyRooms.map(function (item) {
-                        return `${item.id}.${item.name}`
-                    }).join(', ');
-                    agent.add(`Certaines salles sont réservées sur l'agenda ouvert : ${busyRoomNames}`);
-                }
-                else {
-                    agent.add(`Aucune réservation sur cet agenda`);
 
+                // fin du dialogue, invitation à la suite
+                if (isSquareFerme) {
+                    agent.add("Veux tu que je regarde aussi dans l'agenda Square ouvert ?")
+                    agent.setContext({'name': 'room', 'lifespan': 2, 'parameters': agent.parameters});
+                } else {
+                    agent.add(`Veux tu que je t'aide à réserver une salle ? Si oui, dis moi quelle salle réserver`);
                 }
-                agent.add(`Veux tu que je t'aide à réserver une salle ? Si oui, dis moi quelle salle réserver`);
                 resolve();
-
             });
         });
+
+    }
+
+    // Uncomment and edit to make your own intent handler
+    // uncomment `intentMap.set('your intent name here', yourFunctionHandler);`
+    // below to get this function to be run when a Dialogflow intent is matched
+    function lookupForAMeetingRoom(agent) {
+
+        return searchARoom('rikeddg9ebiras8ptmstro0um0@group.calendar.google.com', agent, agent.parameters)
+
+
+    }
+
+    function lookupForAMeetingRoomInSquareOuvert(agent) {
+        let context = agent.getContext('room');
+        if (typeof context === "undefined") {
+            agent.add(`Je n'ai pas compris, recommençons à zéro si tu veux bien`);
+            return;
+        }
+
+        return searchARoom('gm1l9afi00ol3ism78svc5mt2k@group.calendar.google.com', agent, context.parameters);
 
     }
 
@@ -321,6 +250,7 @@ exports.dialogflowFirebaseFulfillment = functions.https.onRequest((request, resp
         if (selectedRoom === null) {
             agent.add("Je n'ai pas trouvé la salle dont tu parles");
             agent.add(`Voici les salles que je connais : ${meetingsRoomsNames}`);
+            agent.ask("Peux tu me donner un nom de salle ?")
             return;
         }
         let roomName = `${selectedRoom.id}.${selectedRoom.name} (${selectedRoom.numberOfPersons} p)`;
